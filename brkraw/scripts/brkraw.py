@@ -6,6 +6,7 @@ from ..lib.utils import set_rescale, save_meta_files, mkdir
 import argparse
 import os, re
 import sys
+import warnings
 
 _supporting_bids_ver = '1.2.2'
 
@@ -88,6 +89,7 @@ def main():
                                                   "parsing metadata from the header", action='store_true')
     bids_helper.add_argument("-s", "--subj", help="switch subject and study IDs", action='store_true')
     bids_helper.add_argument("-t", "--sess", help="switch session and study ID", action='store_true')
+    bids_helper.add_argument("--template", help="template BIDS datasheet filename", type=str)
 
     # bids_convert
     bids_convert.add_argument("input", help=input_dir_str, type=str)
@@ -266,8 +268,7 @@ def main():
 
     elif args.function == 'bids_helper':
         import pandas as pd
-        import warnings
-        
+
         path = os.path.abspath(args.input)
         ds_output = os.path.abspath(args.output)
         make_json = args.json
@@ -286,6 +287,25 @@ def main():
 
         # [220202] make compatible with csv, tsv and xlsx
         output = '{}.{}'.format(ds_fname, ds_format) 
+
+        # template BIDS datasheet
+        if args.template is not None:
+            use_template = True
+            tpl_path = os.path.abspath(args.template)
+            _, tpl_ext = os.path.splitext(tpl_path)
+            if 'xlsx' in tpl_ext:
+                template = pd.read_excel(tpl_path, keep_default_na=False)
+            elif 'csv' in tpl_ext:
+                template = pd.read_csv(tpl_path, keep_default_na=False)
+            elif 'tsv' in tpl_ext:
+                template = pd.read_csv(tpl_path, keep_default_na=False, sep='\t')
+            else:
+                print('[{}] is not supported.'.format(tpl_ext))
+                raise InvalidApproach('Invalid input for template datasheet!')
+            last_col = template.columns.get_loc('End')
+            criteria = template.columns[last_col+1:]
+        else:
+            use_template = False
 
         Headers = ['RawData', 'SubjID', 'SessID', 'ScanID', 'RecoID', 'DataType',
                    'task', 'acq', 'ce', 'rec', 'dir', 'run', 'inv', 'flip', 'mt', 'part', 'modality', 'Start', 'End']
@@ -334,24 +354,37 @@ def main():
                                 
                                 if not is_localizer(dset, scan_id, reco_id):
                                     method = dset.get_method(scan_id).parameters['Method']
+                                    item = dict(zip(Headers, [rawdata, subj_id, sess_id, scan_id, reco_id]))
 
-                                    datatype = assignDataType(method)
-
-                                    item = dict(zip(Headers, [rawdata, subj_id, sess_id, scan_id, reco_id, datatype]))
-                                    if datatype == 'fmap':
-                                        for m, s, e in [['fieldmap', 0, 1], ['magnitude', 1, 2]]:
-                                            item['modality'] = m
-                                            item['Start'] = s
-                                            item['End'] = e
+                                    if use_template:
+                                        method_pars = dset.get_method(scan_id)
+                                        acqp_pars = dset.get_acqp(scan_id)
+                                        reco_pars = pvobj.get_reco(scan_id, reco_id)
+                                        lines = applyTemplateCriteria(template, criteria, acqp_pars, method_pars, reco_pars, visu_pars)
+                                        if lines.shape[0] == 0:
+                                            continue  
+                                        elif lines.shape[0] > 1:
+                                            print(f'Warning: more than one match for {subj_id}: scan {scan_id}\nCheck the datasheet for potential errors')
+                                        for i, line in lines.iterrows():
+                                            item.update(line.iloc[5:last_col+1].to_dict())
                                             df = pd.concat([df, pd.DataFrame([item])], ignore_index=True)
-                                    elif datatype == 'dwi':
-                                        item['modality'] = 'dwi'
-                                        df = pd.concat([df, pd.DataFrame([item])], ignore_index=True)
-                                    elif datatype == 'anat' and re.search('MSME', method, re.IGNORECASE):
-                                        item['modality'] = 'MESE'
-                                        df = pd.concat([df, pd.DataFrame([item])], ignore_index=True)
                                     else:
-                                        df = pd.concat([df, pd.DataFrame([item])], ignore_index=True)
+                                        datatype = assignDataType(method)
+                                        item['DataType'] = datatype
+                                        if datatype == 'fmap':
+                                            for m, s, e in [['fieldmap', 0, 1], ['magnitude', 1, 2]]:
+                                                item['modality'] = m
+                                                item['Start'] = s
+                                                item['End'] = e
+                                                df = pd.concat([df, pd.DataFrame([item])], ignore_index=True)
+                                        elif datatype == 'dwi':
+                                            item['modality'] = 'dwi'
+                                            df = pd.concat([df, pd.DataFrame([item])], ignore_index=True)
+                                        elif datatype == 'anat' and re.search('MSME', method, re.IGNORECASE):
+                                            item['modality'] = 'MESE'
+                                            df = pd.concat([df, pd.DataFrame([item])], ignore_index=True)
+                                        else:
+                                            df = pd.concat([df, pd.DataFrame([item])], ignore_index=True)
         if 'xlsx' in ds_format:
             df.to_excel(output, index=None)
         elif 'csv' in ds_format:
@@ -545,7 +578,35 @@ def cleanSessionID(sess_id):
     return sess_id
 
 
-def assignDataType (method):
+def applyTemplateCriteria(lines, criteria, acqp_pars, method_pars, reco_pars, visu_pars):
+    for param in criteria:
+        if any(lines[param]):
+            if param.startswith('Visu'):
+                param_val = visu_pars.parameters[param]
+            elif param.startswith('ACQ'):
+                param_val = acqp_pars.parameters[param]
+            elif param.startswith('RECO'):
+                param_val = reco_pars.parameters[param]
+            else:
+                param_val = method_pars.parameters[param]
+            num_lines = lines.shape[0]
+            isscan = [False] * num_lines
+            for i in range(num_lines):
+                param_pattern = lines.iloc[i][param]
+                if type(param_pattern) is str:
+                    if param_pattern.startswith('[') and param_pattern.endswith(']'):
+                        list_elements = param_pattern[1:-1].replace(" ","").split(',')
+                        param_pattern = [elem for elem in list_elements]
+                if param == 'VisuSeriesComment':
+                    param_match = bool(re.search(param_pattern, param_val, re.IGNORECASE))
+                else:
+                    param_match = (param_pattern == param_val)
+                isscan[i] = param_match
+            lines = lines[isscan]
+    return lines
+
+
+def assignDataType(method):
     """To assign the dataType based on method.
     Args:
         method (str): the method from BrukerLoader.get_method.parameters['Method'].
