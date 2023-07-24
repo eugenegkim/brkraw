@@ -267,6 +267,7 @@ def main():
     elif args.function == 'bids_helper':
         import pandas as pd
         import warnings
+        
         path = os.path.abspath(args.input)
         ds_output = os.path.abspath(args.output)
         make_json = args.json
@@ -287,7 +288,7 @@ def main():
         output = '{}.{}'.format(ds_fname, ds_format) 
 
         Headers = ['RawData', 'SubjID', 'SessID', 'ScanID', 'RecoID', 'DataType',
-                   'task', 'acq', 'ce', 'rec', 'dir', 'run', 'flip', 'mt', 'part', 'modality', 'Start', 'End']
+                   'task', 'acq', 'ce', 'rec', 'dir', 'run', 'inv', 'flip', 'mt', 'part', 'modality', 'Start', 'End']
         df = pd.DataFrame(columns=Headers)
 
         # if the path directly contains scan files for one participant
@@ -502,8 +503,6 @@ def cleanSubjectID(subj_id):
         str: the replaced subject id.
     """
 
-    import warnings
-
     subj_id = str(subj_id)
     
     # underscore will mess up bids output
@@ -528,8 +527,6 @@ def cleanSessionID(sess_id):
     Returns:
         str: the replaced session id.
     """
-
-    import warnings
     
     sess_id = str(sess_id)
 
@@ -568,7 +565,6 @@ def assignDataType (method):
         datatype = 'anat'
 
         # warn user for MSME default to anat and MESE
-        import warnings
         msg = "MSME found in your scan, default to anat DataType and MESE modality, " + \
         "please update the datasheet to indicate the proper DataType if different than default." 
         warnings.warn(msg)
@@ -578,8 +574,6 @@ def assignDataType (method):
         datatype = 'etc'
 
         # warn user to manually update the DataType in datasheet
-        import warnings
-        
         msg = "\n \n ----- Important ----- \
         \n We do not know how to classify some of your scan and marked them as etc.\
         \n To produce valid BIDS outputs, please update the datasheet to indicate the proper DataType for them \n"
@@ -736,7 +730,6 @@ def is_localizer(pvobj, scan_id, reco_id):
 
 def override_header(pvobj, subjtype, position):
     """override subject position and subject type"""
-    import warnings
     if position != None:
         try:
             pvobj.override_position(position)
